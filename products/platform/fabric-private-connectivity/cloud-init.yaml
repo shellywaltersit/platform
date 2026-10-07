@@ -1,0 +1,58 @@
+#cloud-config
+# -----------------------------------------------------------------------------
+# HAProxy proxy baseline.
+#
+# This file is deliberately STATIC. Azure won't let you change customData on an
+# existing VM, so anything that changes over time (the destination listeners)
+# is pushed after deployment by scripts/push-haproxy-config.sh.
+#
+# A freshly built VM comes up healthy (passing the ILB probe) but with no
+# listeners. The pipeline always pushes config right after deploying, so a
+# replaced VM gets its listeners within the same run.
+# -----------------------------------------------------------------------------
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - haproxy
+
+write_files:
+  # Baseline config: health endpoint only. Replaced by the rendered config.
+  - path: /etc/haproxy/haproxy.cfg
+    owner: root:root
+    permissions: '0644'
+    content: |
+      global
+          log /dev/log local0
+          chroot /var/lib/haproxy
+          stats socket /run/haproxy/admin.sock mode 660 level admin
+          user haproxy
+          group haproxy
+          daemon
+
+      defaults
+          log global
+          mode tcp
+          timeout connect 10s
+          timeout client 1m
+          timeout server 1m
+
+      frontend health
+          mode http
+          bind :8404
+          timeout http-request 5s
+          monitor-uri /healthz
+
+  # Larger connection backlog for many concurrent Spark executors.
+  - path: /etc/sysctl.d/90-haproxy.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      net.core.somaxconn = 4096
+      net.ipv4.ip_local_port_range = 1024 65000
+
+runcmd:
+  - sysctl --system
+  - systemctl enable haproxy
+  - systemctl restart haproxy
