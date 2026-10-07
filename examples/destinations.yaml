@@ -1,0 +1,40 @@
+# =============================================================================
+# Destination registry: the single source of truth for this platform.
+#
+# One entry = one approved destination. Adding a database is a pull request to
+# this file. The pipeline generates everything else from it:
+#   ILB frontend + rule, Private Link Service, NSG rules, HAProxy listener.
+#
+# EXAMPLE VALUES ONLY. The real registry lives in the private deployment repo.
+# =============================================================================
+
+destinations:
+  - name: sqlprod01                    # short name; used in every resource name
+    fqdn: sqlprod01.ad.example.edu     # the REAL server name, so TLS still validates
+    targetIp: 10.20.30.40              # on-prem address the proxy forwards to
+    port: 1433                         # port the client uses (stays standard)
+    proxyPort: 10001                   # unique internal port HAProxy listens on
+    engine: sqlserver
+    dataClassification: restricted
+    owner: data-platform-team
+    ticket: REQ-0001                   # the approved request that authorized this
+
+  - name: oraprod01
+    fqdn: oraprod01.ad.example.edu
+    targetIp: 10.20.30.50
+    port: 1521
+    proxyPort: 10002
+    engine: oracle
+    dataClassification: internal
+    owner: data-platform-team
+    ticket: REQ-0002
+
+  - name: pgprod01
+    fqdn: pgprod01.ad.example.edu
+    targetIp: 10.20.30.60
+    port: 5432
+    proxyPort: 10003
+    engine: postgresql
+    dataClassification: internal
+    owner: research-computing
+    ticket: REQ-0003
