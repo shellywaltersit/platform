@@ -1,0 +1,51 @@
+# =============================================================================
+# EXAMPLE: the pipeline file in your PRIVATE deployment repo (Azure DevOps).
+#
+# Repo layout it assumes:
+#   <deployment-repo>/
+#     prod/
+#       main.bicepparam      <- Deployment Context (real values)
+#       destinations.yaml    <- the registry
+#       workspaces.yaml      <- workspace onboarding
+#     azure-pipelines.yml    <- this file
+#
+# With two checkouts, ADO puts each repo in its own folder under
+# $(Build.SourcesDirectory). Set the `using` path in main.bicepparam to match,
+# e.g. using '../../fabric-private-connectivity/products/platform/fabric-private-connectivity/main.bicep'
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - prod/*
+
+pr:
+  branches:
+    include:
+      - main
+
+resources:
+  repositories:
+    - repository: product
+      type: github
+      endpoint: github-public-readonly          # GitHub service connection (read-only)
+      name: contoso/fabric-private-connectivity
+      ref: refs/tags/v0.1.0                     # PIN a release. Never track main in prod.
+    - repository: templates
+      type: github
+      endpoint: github-public-readonly
+      name: contoso/fabric-private-connectivity
+      ref: refs/tags/v0.1.0
+
+extends:
+  template: pipelines/templates/fabric-private-connectivity.yml@templates
+  parameters:
+    serviceConnection: sc-fabric-connectivity-prod-wif
+    resourceGroup: rg-fabric-connectivity-prod
+    deploymentPath: $(Build.SourcesDirectory)/$(Build.Repository.Name)/prod
+    productPath: $(Build.SourcesDirectory)/fabric-private-connectivity
+    deployEnvironment: fabric-connectivity-prod
+    approveEnvironment: fabric-connectivity-prod-mpe-approval
