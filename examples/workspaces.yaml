@@ -1,0 +1,23 @@
+# =============================================================================
+# Workspace onboarding: which Fabric workspaces may reach which destinations.
+#
+# scripts/fabric_mpe.py creates one managed private endpoint per
+# (workspace, destination) pair. scripts/approve_pls_connections.py approves
+# only pending connections whose request message carries a ticket listed here.
+#
+# EXAMPLE VALUES ONLY.
+# =============================================================================
+
+workspaces:
+  - name: ws-finance-analytics
+    workspaceId: 11111111-2222-3333-4444-555555555555
+    ticket: REQ-0101
+    destinations:
+      - sqlprod01
+
+  - name: ws-research-data
+    workspaceId: 66666666-7777-8888-9999-000000000000
+    ticket: REQ-0102
+    destinations:
+      - pgprod01
+      - oraprod01
