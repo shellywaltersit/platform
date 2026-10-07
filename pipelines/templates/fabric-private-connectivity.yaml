@@ -1,0 +1,183 @@
+# =============================================================================
+# Reusable Azure DevOps stages for the fabric-private-connectivity product.
+#
+# A private deployment repo `extends` or includes this template, passing its own
+# Deployment Context. The product code comes from the public repo at a pinned
+# tag, so a deployment always knows exactly which product version it ran.
+#
+#   Validate ─► Deploy (approval) ─► Onboard workspaces ─► Approve connections (approval)
+#
+# Nobody logs into the portal. Every change is: PR -> review -> this pipeline.
+# =============================================================================
+
+parameters:
+  - name: serviceConnection        # Workload identity federation (no secrets)
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: deploymentPath           # Folder in the deployment repo with main.bicepparam etc.
+    type: string
+  - name: productPath              # Where the product repo is checked out
+    type: string
+  - name: deployEnvironment        # ADO environment with approvals for infra changes
+    type: string
+  - name: approveEnvironment       # ADO environment with approvals for MPE connections
+    type: string
+  - name: productRepoAlias
+    type: string
+    default: product
+
+variables:
+  deploymentName: fabric-private-connectivity
+  outDir: ${{ parameters.deploymentPath }}/out
+
+stages:
+  # ---------------------------------------------------------------------------
+  - stage: Validate
+    jobs:
+      - job: validate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - checkout: ${{ parameters.productRepoAlias }}
+          - script: pip install pyyaml pytest
+            displayName: Install tools
+          - script: python -m pytest -q ${{ parameters.productPath }}/tests
+            displayName: Unit tests (registry rules)
+          - script: >
+              python ${{ parameters.productPath }}/scripts/render.py
+              --registry ${{ parameters.deploymentPath }}/destinations.yaml
+              --workspaces ${{ parameters.deploymentPath }}/workspaces.yaml
+              --out $(outDir)
+            displayName: Validate and render registry
+          - task: AzureCLI@2
+            displayName: What-if (preview every change)
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az deployment group what-if \
+                  --resource-group "${{ parameters.resourceGroup }}" \
+                  --name "$(deploymentName)" \
+                  --parameters "${{ parameters.deploymentPath }}/main.bicepparam" \
+                  --result-format FullResourcePayloads
+
+  # ---------------------------------------------------------------------------
+  - stage: Deploy
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: deploy
+        environment: ${{ parameters.deployEnvironment }}
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - checkout: ${{ parameters.productRepoAlias }}
+                - script: pip install pyyaml
+                  displayName: Install tools
+                - script: >
+                    python ${{ parameters.productPath }}/scripts/render.py
+                    --registry ${{ parameters.deploymentPath }}/destinations.yaml
+                    --out $(outDir)
+                  displayName: Render registry
+                - task: AzureCLI@2
+                  displayName: Deploy infrastructure, push HAProxy config, write record
+                  inputs:
+                    azureSubscription: ${{ parameters.serviceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az deployment group create \
+                        --resource-group "${{ parameters.resourceGroup }}" \
+                        --name "$(deploymentName)" \
+                        --parameters "${{ parameters.deploymentPath }}/main.bicepparam" \
+                        --query properties.outputs --output json > "$(outDir)/deployment-outputs.json"
+
+                      # Infra first, then config. A replaced VM gets its listeners in this same run.
+                      mapfile -t vms < <(jq -r '.proxyVmNames.value[]' "$(outDir)/deployment-outputs.json")
+                      bash ${{ parameters.productPath }}/scripts/push-haproxy-config.sh \
+                        "${{ parameters.resourceGroup }}" "$(outDir)/haproxy.cfg" "${vms[@]}"
+
+                      python ${{ parameters.productPath }}/scripts/write_deployment_record.py \
+                        --registry ${{ parameters.deploymentPath }}/destinations.yaml \
+                        --outputs "$(outDir)/deployment-outputs.json" \
+                        --out "$(outDir)/deployment-record.json"
+                  env:
+                    PRODUCT_REF: $(resources.repositories.${{ parameters.productRepoAlias }}.ref)
+                - publish: $(outDir)/deployment-record.json
+                  artifact: deployment-record
+                  displayName: Publish deployment record
+
+  # ---------------------------------------------------------------------------
+  - stage: Onboard
+    dependsOn: Deploy
+    jobs:
+      - job: onboard
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - checkout: ${{ parameters.productRepoAlias }}
+          - script: pip install pyyaml
+            displayName: Install tools
+          - task: AzureCLI@2
+            displayName: Create Fabric MPEs and report pending approvals
+            inputs:
+              azureSubscription: ${{ parameters.serviceConnection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                mkdir -p "$(outDir)"
+                az deployment group show \
+                  --resource-group "${{ parameters.resourceGroup }}" --name "$(deploymentName)" \
+                  --query properties.outputs.privateLinkServices.value --output json > "$(outDir)/pls.json"
+
+                python ${{ parameters.productPath }}/scripts/fabric_mpe.py \
+                  --workspaces ${{ parameters.deploymentPath }}/workspaces.yaml \
+                  --pls-outputs "$(outDir)/pls.json"
+
+                # Dry run: this output is what the approver reviews in the next stage.
+                python ${{ parameters.productPath }}/scripts/approve_pls_connections.py \
+                  --workspaces ${{ parameters.deploymentPath }}/workspaces.yaml \
+                  --pls-outputs "$(outDir)/pls.json"
+
+  # ---------------------------------------------------------------------------
+  - stage: Approve
+    dependsOn: Onboard
+    jobs:
+      - deployment: approve
+        environment: ${{ parameters.approveEnvironment }}
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - checkout: ${{ parameters.productRepoAlias }}
+                - script: pip install pyyaml
+                  displayName: Install tools
+                - task: AzureCLI@2
+                  displayName: Approve traceable PLS connections
+                  inputs:
+                    azureSubscription: ${{ parameters.serviceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      mkdir -p "$(outDir)"
+                      az deployment group show \
+                        --resource-group "${{ parameters.resourceGroup }}" --name "$(deploymentName)" \
+                        --query properties.outputs.privateLinkServices.value --output json > "$(outDir)/pls.json"
+                      python ${{ parameters.productPath }}/scripts/approve_pls_connections.py \
+                        --workspaces ${{ parameters.deploymentPath }}/workspaces.yaml \
+                        --pls-outputs "$(outDir)/pls.json" --apply
