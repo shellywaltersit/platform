@@ -127,7 +127,7 @@ $env:ARM_SUBSCRIPTION_ID = az account show --query id --output tsv
 Pick one region from your list. Open **both** `environments/dev.tfvars` and `environments/prod.tfvars`, and replace the `location` value with it. Use the short name with no spaces, such as `eastus2` or `westus3`, not the display name `East US 2`.
 
 ```hcl
-location = "eastus2" # use a region from YOUR allowed list
+location = "northcentralus" # use a region from YOUR allowed list
 ```
 
 Commit this change:
